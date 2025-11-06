@@ -2,88 +2,100 @@ import legume
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import os
 
-# ---- Define structure parameters ----
+
+# Define constants
 a_g = 500e-3
 r_holes = 120e-3
-eps_holes = 1.0
-n_slab = 3.45
-D_slab = 200e-3
-theta = np.deg2rad(6.01)
+d_slab = 200e-3
+theta_deg = 6.01
+theta = np.deg2rad(theta_deg)
 
-# ---- Reciprocal lattice vectors ----
+# Compute moiré lattice constant
+a_moire = a_g / (2 * np.sin(theta / 2))
+
+# --- NORMALIZE all lengths by a_moire ---
+a_g /= a_moire
+r_holes /= a_moire
+d_slab /= a_moire
+
+# Reciprocal lattice vectors of layer 1
 G11 = (2*np.pi/(np.sqrt(3)*a_g)) * np.array([np.sqrt(3), 1])
 G12 = (2*np.pi/(np.sqrt(3)*a_g)) * np.array([np.sqrt(3), -1])
 
+# Rotation matrix and rotated reciprocal vectors
 R = np.array([[np.cos(theta), -np.sin(theta)],
               [np.sin(theta),  np.cos(theta)]])
 G21 = R @ G11
 G22 = R @ G12
 
+# Moiré reciprocal vectors (difference)
 g1_moire = G11 - G21
 g2_moire = G12 - G22
+
+# Moiré real-space lattice vectors
 G_moire = np.column_stack([g1_moire, g2_moire])
 A_moire = 2*np.pi * np.linalg.inv(G_moire.T)
 A1 = A_moire[:,0]
 A2 = A_moire[:,1]
 
-# ---- Load points ----
+# Import coordinates of holes
 df = pd.read_csv("moire_points.csv")
-x = np.array(df.x_cent)
-y = np.array(df.y_cent)
+x = np.array(df.x_cent) / a_moire  # normalize positions
+y = np.array(df.y_cent) / a_moire
 
-# ---- Photonic crystal setup ----
+eps_holes = 1.0  # dielectric constant of holes
+eps_slab = 3.45**2  # dielectric constant of slab
+
+# Build lattice and photonic crystal
 lattice = legume.Lattice(A1, A2)
 phc = legume.PhotCryst(lattice, eps_l=1., eps_u=1.)
-phc.add_layer(d=D_slab, eps_b=n_slab**2)
 
+# Example: single layer (normalized)
+phc.add_layer(d=d_slab, eps_b=eps_slab)
 for i in range(len(x)):
     circle = legume.Circle(eps=eps_holes, x_cent=x[i], y_cent=y[i], r=r_holes)
     phc.add_shape(circle)
 
-# ---- Guided mode expansion ----
-N_Res = 100
-gme = legume.GuidedModeExp(phc, gmax=6)
-Gamma = [0,0]
-K = (g1_moire + g2_moire)/3
-M = g1_moire/2
+# Guided-mode expansion
+gme = legume.GuidedModeExp(phc, gmax=60)
+
+Gamma = [0, 0]
+K = (g1_moire + g2_moire) / 3
+M = g1_moire / 2
 k_points = [Gamma, K, M, Gamma]
 N_points = 10
-path = lattice.bz_path(k_points, [N_points,N_points,N_points])
+path = lattice.bz_path(k_points, [N_points, N_points, N_points])
 path['labels'] = ['G', 'K', 'M', 'G']
 
 gme.run(kpoints=path['kpoints'],
         gmode_inds=[0],
-        numeig=10,
-        eig_solver='eigsh',
-        eig_sigma=3.2,
+        gmode_step=1e-4,
         verbose=False)
 
-# ---- 1️⃣ Band structure plot ----
-fig, ax = plt.subplots(1, figsize=(15, 10))
-legume.viz.bands(gme, figsize=(10, 10), k_units=True, Q=True, ax=ax)
+# --- Band Structure Plot ---
+fig, ax = plt.subplots(1, figsize=(10, 8))
+legume.viz.bands(gme, figsize=(10, 8), k_units=True, Q=True, ax=ax)
 ax.set_xticks(path['k_indexes'])
 ax.set_xticklabels(path['labels'])
 ax.xaxis.grid(True)
 
-a_moire = a_g / (2 * np.sin(np.deg2rad(6.01) / 2))
+a_moire_real = 500e-3 / (2 * np.sin(np.deg2rad(6.01) / 2))  # back to real scale
 
 def norm_to_thz(y):
-    return 300 * y / a_moire  
+    return 300 * y / a_moire_real  
 
 def thz_to_norm(y):
-    return y * a_moire / 300  
+    return y * a_moire_real / 300  
 
 secax = ax.secondary_yaxis('right', functions=(norm_to_thz, thz_to_norm))
 secax.set_ylabel('Frequency (THz)', fontsize=12)
 ax.set_ylabel('Normalized Frequency (ωa/2πc)', fontsize=12)
-
 plt.tight_layout()
 plt.savefig('band_structure.png', dpi=300, bbox_inches='tight')
 plt.close(fig)
 
-# ---- 2️⃣ Density of States (DOS) plot ----
+# --- Density of States (DOS) ---
 freqs = gme.freqs
 all_freqs = freqs.flatten()
 num_bins = 300
@@ -93,28 +105,12 @@ dos, bin_edges = np.histogram(all_freqs, bins=bins, density=False)
 bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 dos = dos / (len(freqs) * (bin_edges[1] - bin_edges[0]))
 
-fig2, ax2 = plt.subplots(figsize=(10, 6))
-ax2.plot(bin_centers, dos, label="DOS")
-ax2.set_xlabel("Frequency")
-ax2.set_ylabel("Density of States")
-ax2.legend()
+fig, ax = plt.subplots(figsize=(8, 6))
+ax.plot(bin_centers, dos, label="DOS")
+ax.set_xlabel("Frequency")
+ax.set_ylabel("Density of States")
+ax.legend()
 plt.tight_layout()
-plt.savefig('density_of_states.png', dpi=300, bbox_inches='tight')
-plt.close(fig2)
+plt.savefig('dos.png', dpi=300, bbox_inches='tight')
+plt.close(fig)
 
-# ---- 3️⃣ Frequency dispersion plot ----
-fig3, ax3 = plt.subplots(figsize=(10, 6))
-ax3.plot(gme.freqs)
-ax3.set_xlabel("k-point index")
-ax3.set_ylabel("Frequency (normalized)")
-ax3.set_title("Frequency dispersion across k-points")
-plt.tight_layout()
-plt.savefig('frequency_dispersion.png', dpi=300, bbox_inches='tight')
-plt.close(fig3)
-
-# ---- Summary ----
-print("✅ Saved plots:")
-print(" - band_structure.png")
-print(" - density_of_states.png")
-print(" - frequency_dispersion.png")
-print(f"📂 Directory: {os.getcwd()}")
